@@ -5,9 +5,9 @@
 ControllerPtr myController;
 
 // Servo pin definitions (pins 0, 1, and 2 as requested)
-#define SERVO_PIN_1 0  // Left Stick X-axis -> Pin 0
-#define SERVO_PIN_2 1  // Left Stick Y-axis -> Pin 1
-#define SERVO_PIN_3 2  // Right Stick Y-axis -> Pin 2
+#define SERVO_PIN_1 6  // Left Stick X-axis -> Pin 0
+#define SERVO_PIN_2 7  // Left Stick Y-axis -> Pin 1
+#define SERVO_PIN_3 8  // Right Stick Y-axis -> Pin 2
 
 Servo servo1;
 Servo servo2;
@@ -63,15 +63,15 @@ void log_controls(ControllerPtr ctl){
 }
 
 void processGamepad(ControllerPtr ctl) {
-  int angle1 = mapAxisToAngle(ctl->axisX());
+  int angle1 = mapAxisToAngle(ctl->throttle());
   servo1.write(angle1);
 
   // 2. Left Stick Y-axis controls Servo 2 (Pin 1)
-  int angle2 = mapAxisToAngle(ctl->axisY());
+  int angle2 = mapAxisToAngle(ctl->brake());
   servo2.write(angle2);
 
   // 3. Right Stick Y-axis controls Servo 3 (Pin 2)
-  int angle3 = mapAxisToAngle(ctl->axisRY());
+  int angle3 = mapAxisToAngle(ctl->axisX());
   servo3.write(angle3);
 
   log_controls(ctl);
