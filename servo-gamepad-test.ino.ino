@@ -51,6 +51,17 @@ void onDisconnectedController(ControllerPtr ctl) {
     } \
   } while (0)
 
+void log_controls(ControllerPtr ctl){
+  CHECK_CONTROL_VALUE(int, leftX, ctl->axisX, "0x%03d");
+  CHECK_CONTROL_VALUE(int, leftY, ctl->axisY, "0x%03d");
+  CHECK_CONTROL_VALUE(int, rightY, ctl->axisRY, "0x%03d");
+  CHECK_CONTROL_VALUE(uint16_t, buttons, ctl->buttons, "0x%04X");
+  CHECK_CONTROL_VALUE(uint16_t, miscButtons, ctl->miscButtons, "0x%04X");
+  CHECK_CONTROL_VALUE(uint8_t, dpad, ctl->dpad, "0x%02X");
+  CHECK_CONTROL_VALUE(uint32_t, throttle, ctl->throttle, "0x%03d");
+  CHECK_CONTROL_VALUE(uint32_t, brake, ctl->brake, "0x%03d");  
+}
+
 void processGamepad(ControllerPtr ctl) {
   int angle1 = mapAxisToAngle(ctl->axisX());
   servo1.write(angle1);
@@ -63,21 +74,7 @@ void processGamepad(ControllerPtr ctl) {
   int angle3 = mapAxisToAngle(ctl->axisRY());
   servo3.write(angle3);
 
-  CHECK_CONTROL_VALUE(int, rightX, ctl->axisX, "0x%03d");
-  CHECK_CONTROL_VALUE(int, rightY, ctl->axisY, "0x%03d");
-  CHECK_CONTROL_VALUE(int, rightY, ctl->axisRY, "0x%03d");
-
-  // Debug logging: print axes and button states to Serial Monitor
-
-  CHECK_CONTROL_VALUE(uint16_t, buttons, ctl->buttons, "0x%04X");
-
-  CHECK_CONTROL_VALUE(uint16_t, miscButtons, ctl->miscButtons, "0x%04X");
-
-  CHECK_CONTROL_VALUE(uint8_t, dpad, ctl->dpad, "0x%02X");
-
-  CHECK_CONTROL_VALUE(uint32_t, throttle, ctl->throttle, "0x%03d");
-
-  CHECK_CONTROL_VALUE(uint32_t, brake, ctl->brake, "0x%03d");  
+  log_controls(ctl);
 }
 
 void setup() {
