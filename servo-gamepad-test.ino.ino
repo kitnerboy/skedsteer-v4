@@ -1,113 +1,144 @@
-#include <Arduino.h>
-#include <ESP32Servo.h>  // by Kevin Harrington
 #include <Bluepad32.h>
+#include <ESP32Servo.h>
 
-ControllerPtr myController;
+// --- Pin Definitions based on updated netlist ---
+// Drive Motor Driver (DRV8833 #2)
+const int rightMotorPin1 = 7;
+const int rightMotorPin2 = 10;
+const int leftMotorPin1  = 6;
+const int leftMotorPin2  = 5;
 
-// Servo pin definitions (pins 0, 1, and 2 as requested)
-#define SERVO_PIN_1 6  // Left Stick X-axis -> Pin 0
-#define SERVO_PIN_2 7  // Left Stick Y-axis -> Pin 1
-#define SERVO_PIN_3 8  // Right Stick Y-axis -> Pin 2
+// Arm & Aux Motor Driver (DRV8833 #1)
+const int armMotorPin1   = 20;
+const int armMotorPin2   = 21;
+const int auxPin3        = 1;
+const int auxPin4        = 0;
 
-Servo servo1;
-Servo servo2;
-Servo servo3;
+// Servos
+const int bucketServoPin = 3;
+const int clawServoPin   = 4;
 
-// Helper function to map Bluepad32 axis value (-512 to 511) to servo angle (0 to 180 degrees)
-int mapAxisToAngle(int32_t axisValue) {
-  if (axisValue < -512) axisValue = -512;
-  if (axisValue > 511) axisValue = 511;
-  return map(axisValue, -512, 511, 0, 180);
-}
+Servo bucketServo;
+Servo clawServo;
 
-void onConnectedController(ControllerPtr ctl) {
-  if (myController == nullptr) {
-    Serial.println("CALLBACK: Controller connected");
-    myController = ctl;
-    BP32.enableNewBluetoothConnections(false);
-    // Play a short rumble to indicate successful connection
-    ctl->playDualRumble(0, 250, 0x80, 0x40);
-  } else {
-    Serial.println("CALLBACK: Another controller tried to connect, rejecting.");
-    ctl->disconnect();
-  }
-}
+ControllerPtr myControllers[BP32_MAX_CONTROLLERS];
 
-void onDisconnectedController(ControllerPtr ctl) {
-  if (myController == ctl) {
-    Serial.println("CALLBACK: Controller disconnected");
-    myController = nullptr;
-    BP32.enableNewBluetoothConnections(true);
-  }
-}
-
-#define CHECK_CONTROL_VALUE(type, var, red_func, format) \
-  do { \
-    static type old_##var = 0; \
-    type var = red_func(); \
-    if (var != old_##var) { \
-      Serial.printf("%s changed to " format "\n", #var, var); \
-      old_##var = var; \
-    } \
-  } while (0)
-
-void log_controls(ControllerPtr ctl){
-  CHECK_CONTROL_VALUE(int, leftX, ctl->axisX, "0x%03d");
-  CHECK_CONTROL_VALUE(int, leftY, ctl->axisY, "0x%03d");
-  CHECK_CONTROL_VALUE(int, rightY, ctl->axisRY, "0x%03d");
-  CHECK_CONTROL_VALUE(uint16_t, buttons, ctl->buttons, "0x%04X");
-  CHECK_CONTROL_VALUE(uint16_t, miscButtons, ctl->miscButtons, "0x%04X");
-  CHECK_CONTROL_VALUE(uint8_t, dpad, ctl->dpad, "0x%02X");
-  CHECK_CONTROL_VALUE(uint32_t, throttle, ctl->throttle, "0x%03d");
-  CHECK_CONTROL_VALUE(uint32_t, brake, ctl->brake, "0x%03d");  
-}
-
-void processGamepad(ControllerPtr ctl) {
-  int angle1 = mapAxisToAngle(ctl->throttle());
-  servo1.write(angle1);
-
-  // 2. Left Stick Y-axis controls Servo 2 (Pin 1)
-  int angle2 = mapAxisToAngle(ctl->brake());
-  servo2.write(angle2);
-
-  // 3. Right Stick Y-axis controls Servo 3 (Pin 2)
-  int angle3 = mapAxisToAngle(ctl->axisX());
-  servo3.write(angle3);
-
-  log_controls(ctl);
-}
+// Smoothing variables for DC motors (acceleration ramping)
+int currentLeftSpeed = 0;
+int currentRightSpeed = 0;
+const int accelerationStep = 4; 
 
 void setup() {
-  Serial.begin(115200);
+    USBSerial.begin(115200);
+    
+    // Configure motor control pins as outputs
+    pinMode(rightMotorPin1, OUTPUT);
+    pinMode(rightMotorPin2, OUTPUT);
+    pinMode(leftMotorPin1,  OUTPUT);
+    pinMode(leftMotorPin2,  OUTPUT);
+    
+    pinMode(armMotorPin1, OUTPUT);
+    pinMode(armMotorPin2, OUTPUT);
+    pinMode(auxPin3,      OUTPUT);
+    pinMode(auxPin4,      OUTPUT);
 
-  delay(2000);
+    // Attach servos
+    bucketServo.attach(bucketServoPin);
+    clawServo.attach(clawServoPin);
 
-  // Attach servos to pins 0, 1, and 2
-  servo1.attach(SERVO_PIN_1);
-  servo2.attach(SERVO_PIN_2);
-  servo3.attach(SERVO_PIN_3);
-
-  // Move servos to center position (90 degrees) on startup
-  servo1.write(90);
-  servo2.write(90);
-  servo3.write(90);
-
-  Serial.printf("Firmware: %s\n", BP32.firmwareVersion());
-
-  // Setup Bluepad32 callbacks
-  BP32.setup(&onConnectedController, &onDisconnectedController);
-  BP32.forgetBluetoothKeys();
-  BP32.enableVirtualDevice(false);
+    // Initialize Bluepad32
+    BP32.setup(&onConnectedController, &onDisconnectedController);
+    BP32.enableVirtualDevice(false);
+    
+    delay(2000);
+    USBSerial.println("MiniSkidi-V4 initialized with ESP32-C3-SuperMini pinout.");
 }
 
 void loop() {
-  // Fetch controller data updates
-  bool dataUpdated = BP32.update();
+    bool dataUpdated = BP32.update();
+    if (dataUpdated) {
+        processControllers();
+    }
+    vTaskDelay(1);
+}
 
-  if (dataUpdated && myController && myController->isConnected() && myController->isGamepad()) {
-    processGamepad(myController);
-  }
+void onConnectedController(ControllerPtr ctl) {
+    for (int i = 0; i < BP32_MAX_CONTROLLERS; i++) {
+        if (myControllers[i] == nullptr) {
+            myControllers[i] = ctl;
+            USBSerial.println("Controller connected at index %d\n", i);
+            return;
+        }
+    }
+}
 
-  // Yield to FreeRTOS task watchdog
-  vTaskDelay(1);
+void onDisconnectedController(ControllerPtr ctl) {
+    for (int i = 0; i < BP32_MAX_CONTROLLERS; i++) {
+        if (myControllers[i] == ctl) {
+            myControllers[i] = nullptr;
+            USBSerial.println("Controller disconnected from index %d\n", i);
+            // Stop all motors on disconnect
+            moveMotors(0, 0);
+            return;
+        }
+    }
+}
+
+void moveMotors(int leftSpeed, int rightSpeed) {
+    // Simple motor control helper using PWM/Digital signals
+    if (leftSpeed > 0) {
+        analogWrite(leftMotorPin1, leftSpeed);
+        digitalWrite(leftMotorPin2, LOW);
+    } else {
+        analogWrite(leftMotorPin1, 0);
+        digitalWrite(leftMotorPin2, abs(leftSpeed));
+    }
+
+    if (rightSpeed > 0) {
+        analogWrite(rightMotorPin1, rightSpeed);
+        digitalWrite(rightMotorPin2, LOW);
+    } else {
+        analogWrite(rightMotorPin1, 0);
+        digitalWrite(rightMotorPin2, abs(rightSpeed));
+    }
+}
+
+void processGamepad(ControllerPtr ctl) {
+    int LXValue = ctl->axisX();
+    int LYValue = ctl->axisY();
+    
+    int targetDrive = -map(LYValue, -512, 511, -255, 255);
+    int targetSteer = map(LXValue, -512, 511, -255, 255);
+    
+    int targetLeftSpeed  = constrain(targetDrive - targetSteer, -255, 255);
+    int targetRightSpeed = constrain(targetDrive + targetSteer, -255, 255);
+    
+    // Deadzone check
+    if (abs(LXValue) < 15 && abs(LYValue) < 15) {
+        targetLeftSpeed = 0;
+        targetRightSpeed = 0;
+    }
+
+    // Acceleration ramping
+    if (currentLeftSpeed < targetLeftSpeed) 
+      currentLeftSpeed = min(currentLeftSpeed + accelerationStep, targetLeftSpeed);
+    else if (currentLeftSpeed > targetLeftSpeed) 
+      currentLeftSpeed = max(currentLeftSpeed - accelerationStep, targetLeftSpeed);
+
+    if (currentRightSpeed < targetRightSpeed) 
+      currentRightSpeed = min(currentRightSpeed + accelerationStep, targetRightSpeed);
+    else if (currentRightSpeed > targetRightSpeed) 
+      currentRightSpeed = max(currentRightSpeed - accelerationStep, targetRightSpeed);
+
+    moveMotors(currentLeftSpeed, currentRightSpeed);
+}
+
+void processControllers() {
+    for (auto ctl : myControllers) {
+        if (ctl && ctl->isConnected() && ctl->hasData()) {
+            if (ctl->isGamepad()) {
+                processGamepad(ctl);
+            }
+        }
+    }
 }
