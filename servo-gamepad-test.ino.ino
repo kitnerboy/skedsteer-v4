@@ -27,6 +27,10 @@ int currentLeftSpeed = 0;
 int currentRightSpeed = 0;
 const int accelerationStep = 4; 
 
+// Servo speed control variables
+float bucketServoPosition = 90.0; // Start at middle position (90 degrees)
+const float maxServoSpeed = 2.0;  // Maximum angle change per loop iteration
+
 // State variable for lights toggle
 bool lightsOn = false;
 unsigned long lastButtonPress = 0;
@@ -44,9 +48,10 @@ void setup() {
     pinMode(armMotorPin2, OUTPUT);
     pinMode(auxLightsPin, OUTPUT);
 
-    // Attach servos
+    // Attach servos and set initial position
     bucketServo.attach(bucketServoPin);
     clawServo.attach(clawServoPin);
+    bucketServo.write((int)bucketServoPosition);
 
     // Initialize Bluepad32
     BP32.setup(&onConnectedController, &onDisconnectedController);
@@ -61,7 +66,7 @@ void loop() {
     if (dataUpdated) {
         processControllers();
     }
-    vTaskDelay(1);
+    vTaskDelay(10); // Small delay to control servo update rate and smoothness
 }
 
 void onConnectedController(ControllerPtr ctl) {
@@ -136,31 +141,51 @@ void processGamepad(ControllerPtr ctl) {
     }
 
     // Acceleration ramping
-    if (currentLeftSpeed < targetLeftSpeed) 
+    if (currentLeftSpeed < targetLeftSpeed)
       currentLeftSpeed = min(currentLeftSpeed + accelerationStep, targetLeftSpeed);
-    else if (currentLeftSpeed > targetLeftSpeed) 
+    else if (currentLeftSpeed > targetLeftSpeed)
       currentLeftSpeed = max(currentLeftSpeed - accelerationStep, targetLeftSpeed);
 
-    if (currentRightSpeed < targetRightSpeed) 
+    if (currentRightSpeed < targetRightSpeed)
       currentRightSpeed = min(currentRightSpeed + accelerationStep, targetRightSpeed);
-    else if (currentRightSpeed > targetRightSpeed) 
+    else if (currentRightSpeed > targetRightSpeed)
       currentRightSpeed = max(currentRightSpeed - accelerationStep, targetRightSpeed);
 
     moveMotors(currentLeftSpeed, currentRightSpeed);
 
-    // --- 2. Arm Control (Right Stick Y axis or Bumpers) ---
-    int RYValue = ctl->axisRY(); // Правый стик по вертикали
+    // --- 2. Arm Control (Right Stick Y axis) ---
+    int RYValue = ctl->axisRY();
     int armSpeed = 0;
     if (abs(RYValue) > 20) {
         armSpeed = -map(RYValue, -512, 511, -255, 255);
     }
     moveArm(armSpeed);
 
-    // --- 3. Lights Toggle (Button X / Square or similar) ---
-    // ctl->buttons() maps gamepad buttons. Let's use button mask (e.g. 0x0001 for A, 0x0002 for B, etc.)
-    // Or check specific gamepads. Standard Bluepad32 button bits: 0x01 = A, 0x02 = B, 0x04 = X, 0x08 = Y
+    // --- 3. Servo Speed Control via Triggers (L2 / R2) ---
+    // ctl->throttle() is R2, ctl->brake() is L2 (values range from 0 to 1023)
+    int r2Value = ctl->throttle(); 
+    int l2Value = ctl->brake();     
+
+    float servoStep = 0;
+    if (r2Value > 30) {
+        // Right trigger moves servo in one direction, speed proportional to trigger press
+        servoStep += map(r2Value, 0, 1023, 0, maxServoSpeed * 100) / 100.0;
+    }
+    if (l2Value > 30) {
+        // Left trigger moves servo in the opposite direction
+        servoStep -= map(l2Value, 0, 1023, 0, maxServoSpeed * 100) / 100.0;
+    }
+
+    // Update servo position and constrain within safe limits (0 - 180 degrees)
+    if (servoStep != 0) {
+        bucketServoPosition += servoStep;
+        bucketServoPosition = constrain(bucketServoPosition, 0.0, 180.0);
+        bucketServo.write((int)bucketServoPosition);
+    }
+
+    // --- 4. Lights Toggle (Button X / Square) ---
     uint32_t b = ctl->buttons();
-    if ((b & 0x0004) && (millis() - lastButtonPress > 400)) { // Кнопка X (или аналогичная) с дебаунсом
+    if ((b & 0x0004) && (millis() - lastButtonPress > 400)) {
         lightsOn = !lightsOn;
         digitalWrite(auxLightsPin, lightsOn ? HIGH : LOW);
         lastButtonPress = millis();
