@@ -11,8 +11,7 @@ const int leftMotorPin2  = 5;
 // Arm & Aux Motor Driver (DRV8833 #1)
 const int armMotorPin1   = 20;
 const int armMotorPin2   = 21;
-const int auxPin3        = 1;
-const int auxPin4        = 0;
+const int auxLightsPin   = 0; // Фара (управление одним пином, второй IN4 посажен на GND)
 
 // Servos
 const int bucketServoPin = 3;
@@ -28,10 +27,14 @@ int currentLeftSpeed = 0;
 int currentRightSpeed = 0;
 const int accelerationStep = 4; 
 
+// State variable for lights toggle
+bool lightsOn = false;
+unsigned long lastButtonPress = 0;
+
 void setup() {
     USBSerial.begin(115200);
     
-    // Configure motor control pins as outputs
+    // Configure motor and light control pins as outputs
     pinMode(rightMotorPin1, OUTPUT);
     pinMode(rightMotorPin2, OUTPUT);
     pinMode(leftMotorPin1,  OUTPUT);
@@ -39,8 +42,7 @@ void setup() {
     
     pinMode(armMotorPin1, OUTPUT);
     pinMode(armMotorPin2, OUTPUT);
-    pinMode(auxPin3,      OUTPUT);
-    pinMode(auxPin4,      OUTPUT);
+    pinMode(auxLightsPin, OUTPUT);
 
     // Attach servos
     bucketServo.attach(bucketServoPin);
@@ -66,7 +68,7 @@ void onConnectedController(ControllerPtr ctl) {
     for (int i = 0; i < BP32_MAX_CONTROLLERS; i++) {
         if (myControllers[i] == nullptr) {
             myControllers[i] = ctl;
-            USBSerial.println("Controller connected at index %d\n", i);
+            USBSerial.println("Controller connected at index \n");
             return;
         }
     }
@@ -76,16 +78,17 @@ void onDisconnectedController(ControllerPtr ctl) {
     for (int i = 0; i < BP32_MAX_CONTROLLERS; i++) {
         if (myControllers[i] == ctl) {
             myControllers[i] = nullptr;
-            USBSerial.println("Controller disconnected from index %d\n", i);
+            USBSerial.println("Controller disconnected from index\n");
             // Stop all motors on disconnect
             moveMotors(0, 0);
+            moveArm(0);
+            digitalWrite(auxLightsPin, LOW);
             return;
         }
     }
 }
 
 void moveMotors(int leftSpeed, int rightSpeed) {
-    // Simple motor control helper using PWM/Digital signals
     if (leftSpeed > 0) {
         analogWrite(leftMotorPin1, leftSpeed);
         digitalWrite(leftMotorPin2, LOW);
@@ -103,7 +106,21 @@ void moveMotors(int leftSpeed, int rightSpeed) {
     }
 }
 
+void moveArm(int speed) {
+    if (speed > 0) {
+        analogWrite(armMotorPin1, speed);
+        digitalWrite(armMotorPin2, LOW);
+    } else if (speed < 0) {
+        analogWrite(armMotorPin1, 0);
+        analogWrite(armMotorPin2, abs(speed));
+    } else {
+        digitalWrite(armMotorPin1, LOW);
+        digitalWrite(armMotorPin2, LOW);
+    }
+}
+
 void processGamepad(ControllerPtr ctl) {
+    // --- 1. Drive Control (Left Stick) ---
     int LXValue = ctl->axisX();
     int LYValue = ctl->axisY();
     
@@ -113,7 +130,6 @@ void processGamepad(ControllerPtr ctl) {
     int targetLeftSpeed  = constrain(targetDrive - targetSteer, -255, 255);
     int targetRightSpeed = constrain(targetDrive + targetSteer, -255, 255);
     
-    // Deadzone check
     if (abs(LXValue) < 15 && abs(LYValue) < 15) {
         targetLeftSpeed = 0;
         targetRightSpeed = 0;
@@ -131,6 +147,24 @@ void processGamepad(ControllerPtr ctl) {
       currentRightSpeed = max(currentRightSpeed - accelerationStep, targetRightSpeed);
 
     moveMotors(currentLeftSpeed, currentRightSpeed);
+
+    // --- 2. Arm Control (Right Stick Y axis or Bumpers) ---
+    int RYValue = ctl->axisRY(); // Правый стик по вертикали
+    int armSpeed = 0;
+    if (abs(RYValue) > 20) {
+        armSpeed = -map(RYValue, -512, 511, -255, 255);
+    }
+    moveArm(armSpeed);
+
+    // --- 3. Lights Toggle (Button X / Square or similar) ---
+    // ctl->buttons() maps gamepad buttons. Let's use button mask (e.g. 0x0001 for A, 0x0002 for B, etc.)
+    // Or check specific gamepads. Standard Bluepad32 button bits: 0x01 = A, 0x02 = B, 0x04 = X, 0x08 = Y
+    uint32_t b = ctl->buttons();
+    if ((b & 0x0004) && (millis() - lastButtonPress > 400)) { // Кнопка X (или аналогичная) с дебаунсом
+        lightsOn = !lightsOn;
+        digitalWrite(auxLightsPin, lightsOn ? HIGH : LOW);
+        lastButtonPress = millis();
+    }
 }
 
 void processControllers() {
