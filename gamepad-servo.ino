@@ -153,8 +153,8 @@ void processGamepad(ControllerPtr ctl) {
     int targetDrive = -map(LYValue, -512, 511, -255, 255);
     int targetSteer = map(LXValue, -512, 511, -255, 255);
 
-    int targetLeftSpeed  = constrain(targetDrive - targetSteer, -255, 255);
-    int targetRightSpeed = constrain(targetDrive + targetSteer, -255, 255);
+    int targetLeftSpeed  = constrain(targetDrive + targetSteer, -255, 255);
+    int targetRightSpeed = constrain(targetDrive - targetSteer, -255, 255);
 
     if (abs(LXValue) < 15 && abs(LYValue) < 15) {
         targetLeftSpeed = 0;
