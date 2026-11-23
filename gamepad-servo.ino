@@ -135,6 +135,16 @@ void moveArm(int speed) {
     }
 }
 
+const int triggerDeadzone = 100; // Deadzone threshold for resting trigger noise/offset
+
+int computeTriggerSpeed(int rawValue) {
+    if (rawValue <= triggerDeadzone) {
+        return 0;
+    }
+    // Map smoothly from deadzone edge to full speed
+    return constrain(map(rawValue, triggerDeadzone, 1023, 0, 255), 0, 255);
+}
+
 void processGamepad(ControllerPtr ctl) {
     // --- 1. Drive Control (Left Stick) ---
     int LXValue = ctl->axisX();
@@ -169,13 +179,7 @@ void processGamepad(ControllerPtr ctl) {
     int r2Value = ctl->throttle();
     int l2Value = ctl->brake();
 
-    int armSpeed = 0;
-    if (r2Value > 30) {
-        armSpeed += map(r2Value, 0, 1023, 0, 255);
-    }
-    if (l2Value > 30) {
-        armSpeed -= map(l2Value, 0, 1023, 0, 255);
-    }
+    int armSpeed = computeTriggerSpeed(r2Value) - computeTriggerSpeed(l2Value);
     armSpeed = constrain(armSpeed, -255, 255);
     moveArm(armSpeed);
 
