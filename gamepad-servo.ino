@@ -26,20 +26,24 @@ ControllerPtr myControllers[BP32_MAX_CONTROLLERS];
 int currentLeftSpeed = 0;
 int currentRightSpeed = 0;
 const int accelerationStep = 4; 
+const int dead_zone_value = 15;
+
+// Arm fixed PWM speed for digital bumper control (0..255)
+const int armFixedSpeed = 140;
 
 // Servo control variables
 float bucketServoPosition = 90.0; // Bucket servo (analog triggers L2/R2)
 const float bucketServoSpeed = 2.0;  
 
-float clawServoPosition = 90.0;   // Claw servo (discrete buttons R1/L1)
-const float clawFixedSpeed = 2.0;     // Fixed speed for R1/L1 control
+float clawServoPosition = 90.0;   // Claw servo (discrete buttons)
+const float clawFixedSpeed = 2.0;     // Fixed speed for discrete control
 
 // State variable for lights toggle
 bool lightsOn = false;
 unsigned long lastButtonPress = 0;
 
 void setup() {
-    Serial.begin(115200);
+    USBSerial.begin(115200);
     
     // Configure motor and light control pins as outputs
     pinMode(rightMotorPin1, OUTPUT);
@@ -60,8 +64,8 @@ void setup() {
     // Initialize Bluepad32
     BP32.setup(&onConnectedController, &onDisconnectedController);
     BP32.enableVirtualDevice(false);
-    
-    Serial.println("MiniSkidi-V4 initialized with dual servo control (Triggers + Bumpers).");
+
+    USBSerial.println("MiniSkidi-V4 initialized with bumper arm control.");
 }
 
 void loop() {
@@ -76,7 +80,7 @@ void onConnectedController(ControllerPtr ctl) {
     for (int i = 0; i < BP32_MAX_CONTROLLERS; i++) {
         if (myControllers[i] == nullptr) {
             myControllers[i] = ctl;
-            Serial.printf("Controller connected at index %d\n", i);
+            USBSerial.printf("Controller connected at index %d\n", i);
             return;
         }
     }
@@ -86,7 +90,7 @@ void onDisconnectedController(ControllerPtr ctl) {
     for (int i = 0; i < BP32_MAX_CONTROLLERS; i++) {
         if (myControllers[i] == ctl) {
             myControllers[i] = nullptr;
-            Serial.printf("Controller disconnected from index %d\n", i);
+            USBSerial.printf("Controller disconnected from index %d\n", i);
             moveMotors(0, 0);
             moveArm(0);
             digitalWrite(auxLightsPin, LOW);
@@ -113,16 +117,27 @@ void moveMotors(int leftSpeed, int rightSpeed) {
     }
 }
 
+void setMotorPinPwm(int pin, int duty) {
+    if (duty > 0) {
+        pinMode(pin, OUTPUT);
+        analogWrite(pin, constrain(duty, 0, 255));
+    } else {
+        // Switch unused motor input back to plain GPIO LOW to release PWM activity
+        pinMode(pin, OUTPUT);
+        digitalWrite(pin, LOW);
+    }
+}
+
 void moveArm(int speed) {
     if (speed > 0) {
-        analogWrite(armMotorPin1, speed);
-        digitalWrite(armMotorPin2, LOW);
+        setMotorPinPwm(armMotorPin1, speed);
+        setMotorPinPwm(armMotorPin2, 0);
     } else if (speed < 0) {
-        analogWrite(armMotorPin1, 0);
-        analogWrite(armMotorPin2, abs(speed));
+        setMotorPinPwm(armMotorPin1, 0);
+        setMotorPinPwm(armMotorPin2, abs(speed));
     } else {
-        digitalWrite(armMotorPin1, LOW);
-        digitalWrite(armMotorPin2, LOW);
+        setMotorPinPwm(armMotorPin1, 0);
+        setMotorPinPwm(armMotorPin2, 0);
     }
 }
 
@@ -130,37 +145,32 @@ void processGamepad(ControllerPtr ctl) {
     // --- 1. Drive Control (Left Stick) ---
     int LXValue = ctl->axisX();
     int LYValue = ctl->axisY();
-    
-    int targetDrive = -map(LYValue, -512, 511, -255, 255);
-    int targetSteer = map(LXValue, -512, 511, -255, 255);
-    
-    int targetLeftSpeed  = constrain(targetDrive - targetSteer, -255, 255);
-    int targetRightSpeed = constrain(targetDrive + targetSteer, -255, 255);
-    
-    if (abs(LXValue) < 15 && abs(LYValue) < 15) {
-        targetLeftSpeed = 0;
-        targetRightSpeed = 0;
-    }
 
-    if (currentLeftSpeed < targetLeftSpeed) currentLeftSpeed = min(currentLeftSpeed + accelerationStep, targetLeftSpeed);
-    else if (currentLeftSpeed > targetLeftSpeed) currentLeftSpeed = max(currentLeftSpeed - accelerationStep, targetLeftSpeed);
+    int targetDrive = (abs(LYValue) > 20) ? -map(LYValue, -512, 511, -255, 255) : 0;
+    int targetSteer = (abs(LXValue) > 20) ? map(LXValue, -512, 511, -255, 255) : 0;
 
-    if (currentRightSpeed < targetRightSpeed) currentRightSpeed = min(currentRightSpeed + accelerationStep, targetRightSpeed);
-    else if (currentRightSpeed > targetRightSpeed) currentRightSpeed = max(currentRightSpeed - accelerationStep, targetRightSpeed);
+    int leftSpeed  = constrain(targetDrive + targetSteer, -255, 255);
+    int rightSpeed = constrain(targetDrive - targetSteer, -255, 255);
 
-    moveMotors(currentLeftSpeed, currentRightSpeed);
+    moveMotors(leftSpeed, rightSpeed);
 
-    // --- 2. Arm Control (Right Stick Y axis) ---
-    int RYValue = ctl->axisRY();
+    // --- 2. Arm Control via Digital Bumpers (R1 / L1) ---
+    uint32_t buttons = ctl->buttons();
+    // Adjust bit masks if your Steam Controller maps bumpers to different bits
+    bool r1Pressed = (buttons & 0x0010) != 0;
+    bool l1Pressed = (buttons & 0x0020) != 0;
+
     int armSpeed = 0;
-    if (abs(RYValue) > 20) {
-        armSpeed = -map(RYValue, -512, 511, -255, 255);
+    if (r1Pressed && !l1Pressed) {
+        armSpeed = armFixedSpeed;
+    } else if (l1Pressed && !r1Pressed) {
+        armSpeed = -armFixedSpeed;
     }
     moveArm(armSpeed);
 
     // --- 3. Bucket Servo Control via Analog Triggers (L2 / R2) ---
-    int r2Value = ctl->throttle(); 
-    int l2Value = ctl->brake();     
+    int r2Value = ctl->throttle();
+    int l2Value = ctl->brake();
 
     float bucketStep = 0;
     if (r2Value > 30) {
@@ -176,40 +186,27 @@ void processGamepad(ControllerPtr ctl) {
         bucketServo.write((int)bucketServoPosition);
     }
 
-    // --- 4. Claw Servo Control via Discrete Bumpers (R1 / L1) ---
-    // Bluepad32 button bits for bumpers: typically R1 and L1 have specific bit masks, 
-    // or we can use ctl->miscButtons() / specific masks depending on gamepad type.
-    // Standard mapping: let's check standard button bits or use ctl->buttons().
-    uint32_t buttons = ctl->buttons();
-    
-    // Note: depending on the gamepad model (DS4, Xbox, etc.), R1/L1 are often in ctl->buttons() 
-    // or separate fields. In Bluepad32, standard shoulder buttons are usually part of buttons bitmask.
-    // Let's check common masks or generic button flags. 
-    // Alternatively, check standard Bluepad constants if available, or evaluate standard bits:
-    // (If R1/L1 map to specific bits, e.g., 0x0010 / 0x0020, adjust as needed for your gamepad).
-    bool r1Pressed = (buttons & 0x0010); // Example bit for R1 (adjust if needed)
-    bool l1Pressed = (buttons & 0x0020); // Example bit for L1 (adjust if needed)
+    // --- 4. Claw Servo Control (kept compatible with base sketch) ---
+    // float clawStep = 0;
+    // if (buttons & 0x0001) {
+    //     clawStep += clawFixedSpeed;
+    // }
+    // if (buttons & 0x0002) {
+    //     clawStep -= clawFixedSpeed;
+    // }
 
-    float clawStep = 0;
-    if (r1Pressed) {
-        clawStep += clawFixedSpeed; // Move in one direction at fixed speed
-    }
-    if (l1Pressed) {
-        clawStep -= clawFixedSpeed; // Move in opposite direction at fixed speed
-    }
-
-    if (clawStep != 0) {
-        clawServoPosition += clawStep;
-        clawServoPosition = constrain(clawServoPosition, 0.0, 180.0);
-        clawServo.write((int)clawServoPosition);
-    }
+    // if (clawStep != 0) {
+    //     clawServoPosition += clawStep;
+    //     clawServoPosition = constrain(clawServoPosition, 0.0, 180.0);
+    //     clawServo.write((int)clawServoPosition);
+    // }
 
     // --- 5. Lights Toggle (Button X / Square) ---
-    if ((buttons & 0x0004) && (millis() - lastButtonPress > 400)) {
-        lightsOn = !lightsOn;
-        digitalWrite(auxLightsPin, lightsOn ? HIGH : LOW);
-        lastButtonPress = millis();
-    }
+    // if ((buttons & 0x0004) && (millis() - lastButtonPress > 400)) {
+    //     lightsOn = !lightsOn;
+    //     digitalWrite(auxLightsPin, lightsOn ? HIGH : LOW);
+    //     lastButtonPress = millis();
+    // }
 }
 
 void processControllers() {
