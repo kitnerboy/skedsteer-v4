@@ -22,38 +22,31 @@ Servo clawServo;
 
 ControllerPtr myControllers[BP32_MAX_CONTROLLERS];
 
-// Bluepad32 standard gamepad button bitmasks
-constexpr uint32_t BTN_A  = 0x0001;
-constexpr uint32_t BTN_X  = 0x0004;
-constexpr uint32_t BTN_Y  = 0x0008;
-constexpr uint32_t BTN_L1 = 0x0010;
-constexpr uint32_t BTN_R1 = 0x0020;
-
 // Smoothing variables for DC motors (acceleration ramping)
 int currentLeftSpeed = 0;
 int currentRightSpeed = 0;
-const int accelerationStep = 4;
+const int accelerationStep = 4; 
 
 // Servo control variables
-float bucketServoPosition = 90.0; // Start at middle position (90 degrees)
-const float bucketFixedSpeed = 2.0; // Fixed angle step per loop for digital bumpers R1/L1
+float bucketServoPosition = 90.0; // Bucket servo (analog triggers L2/R2)
+const float bucketServoSpeed = 2.0;  
 
-float clawServoPosition = 90.0;   // Start at middle position (90 degrees)
-const float clawFixedSpeed = 2.0;   // Fixed angle step per loop for buttons A/Y
+float clawServoPosition = 90.0;   // Claw servo (discrete buttons R1/L1)
+const float clawFixedSpeed = 2.0;     // Fixed speed for R1/L1 control
 
 // State variable for lights toggle
 bool lightsOn = false;
 unsigned long lastButtonPress = 0;
 
 void setup() {
-    USBSerial.begin(115200);
-
+    Serial.begin(115200);
+    
     // Configure motor and light control pins as outputs
     pinMode(rightMotorPin1, OUTPUT);
     pinMode(rightMotorPin2, OUTPUT);
-    pinMode(leftMotorPin1,  OUTPUT);
-    pinMode(leftMotorPin2,  OUTPUT);
-
+    pinMode(leftMotorPin1, OUTPUT);
+    pinMode(leftMotorPin2, OUTPUT);
+    
     pinMode(armMotorPin1, OUTPUT);
     pinMode(armMotorPin2, OUTPUT);
     pinMode(auxLightsPin, OUTPUT);
@@ -67,9 +60,8 @@ void setup() {
     // Initialize Bluepad32
     BP32.setup(&onConnectedController, &onDisconnectedController);
     BP32.enableVirtualDevice(false);
-
-    delay(2000);
-    USBSerial.println("MiniSkidi-V4 initialized with ESP32-C3-SuperMini pinout.");
+    
+    Serial.println("MiniSkidi-V4 initialized with dual servo control (Triggers + Bumpers).");
 }
 
 void loop() {
@@ -77,14 +69,14 @@ void loop() {
     if (dataUpdated) {
         processControllers();
     }
-    vTaskDelay(10); // Loop delay to keep servo motion smooth and predictable
+    vTaskDelay(10); // Loop delay for smooth servo updates
 }
 
 void onConnectedController(ControllerPtr ctl) {
     for (int i = 0; i < BP32_MAX_CONTROLLERS; i++) {
         if (myControllers[i] == nullptr) {
             myControllers[i] = ctl;
-            USBSerial.println("Controller connected\n");
+            Serial.printf("Controller connected at index %d\n", i);
             return;
         }
     }
@@ -94,8 +86,7 @@ void onDisconnectedController(ControllerPtr ctl) {
     for (int i = 0; i < BP32_MAX_CONTROLLERS; i++) {
         if (myControllers[i] == ctl) {
             myControllers[i] = nullptr;
-            USBSerial.println("Controller disconnected from index\n");
-            // Stop all actuators safely on disconnect
+            Serial.printf("Controller disconnected from index %d\n", i);
             moveMotors(0, 0);
             moveArm(0);
             digitalWrite(auxLightsPin, LOW);
@@ -135,93 +126,86 @@ void moveArm(int speed) {
     }
 }
 
-const int triggerDeadzone = 100; // Deadzone threshold for resting trigger noise/offset
-
-int computeTriggerSpeed(int rawValue) {
-    if (rawValue <= triggerDeadzone) {
-        return 0;
-    }
-    // Map smoothly from deadzone edge to full speed
-    return constrain(map(rawValue, triggerDeadzone, 1023, 0, 255), 0, 255);
-}
-
 void processGamepad(ControllerPtr ctl) {
     // --- 1. Drive Control (Left Stick) ---
     int LXValue = ctl->axisX();
     int LYValue = ctl->axisY();
-
+    
     int targetDrive = -map(LYValue, -512, 511, -255, 255);
     int targetSteer = map(LXValue, -512, 511, -255, 255);
-
-    int targetLeftSpeed  = constrain(targetDrive + targetSteer, -255, 255);
-    int targetRightSpeed = constrain(targetDrive - targetSteer, -255, 255);
-
+    
+    int targetLeftSpeed  = constrain(targetDrive - targetSteer, -255, 255);
+    int targetRightSpeed = constrain(targetDrive + targetSteer, -255, 255);
+    
     if (abs(LXValue) < 15 && abs(LYValue) < 15) {
         targetLeftSpeed = 0;
         targetRightSpeed = 0;
     }
 
-    // Acceleration ramping
-    if (currentLeftSpeed < targetLeftSpeed)
-        currentLeftSpeed = min(currentLeftSpeed + accelerationStep, targetLeftSpeed);
-    else if (currentLeftSpeed > targetLeftSpeed)
-        currentLeftSpeed = max(currentLeftSpeed - accelerationStep, targetLeftSpeed);
+    if (currentLeftSpeed < targetLeftSpeed) currentLeftSpeed = min(currentLeftSpeed + accelerationStep, targetLeftSpeed);
+    else if (currentLeftSpeed > targetLeftSpeed) currentLeftSpeed = max(currentLeftSpeed - accelerationStep, targetLeftSpeed);
 
-    if (currentRightSpeed < targetRightSpeed)
-        currentRightSpeed = min(currentRightSpeed + accelerationStep, targetRightSpeed);
-    else if (currentRightSpeed > targetRightSpeed)
-        currentRightSpeed = max(currentRightSpeed - accelerationStep, targetRightSpeed);
+    if (currentRightSpeed < targetRightSpeed) currentRightSpeed = min(currentRightSpeed + accelerationStep, targetRightSpeed);
+    else if (currentRightSpeed > targetRightSpeed) currentRightSpeed = max(currentRightSpeed - accelerationStep, targetRightSpeed);
 
     moveMotors(currentLeftSpeed, currentRightSpeed);
 
-    // --- 2. Arm Control via Analog Triggers (R2 / L2) ---
-    // ctl->throttle() is R2, ctl->brake() is L2 (values range from 0 to 1023)
-    int r2Value = ctl->throttle();
-    int l2Value = ctl->brake();
-
-    int armSpeed = computeTriggerSpeed(r2Value) - computeTriggerSpeed(l2Value);
-    armSpeed = constrain(armSpeed, -255, 255);
+    // --- 2. Arm Control (Right Stick Y axis) ---
+    int RYValue = ctl->axisRY();
+    int armSpeed = 0;
+    if (abs(RYValue) > 20) {
+        armSpeed = -map(RYValue, -512, 511, -255, 255);
+    }
     moveArm(armSpeed);
 
-    // --- 3. Bucket Servo Control via Digital Bumpers (R1 / L1) ---
-    uint32_t buttons = ctl->buttons();
-    bool r1Pressed = (buttons & BTN_R1) != 0;
-    bool l1Pressed = (buttons & BTN_L1) != 0;
+    // --- 3. Bucket Servo Control via Analog Triggers (L2 / R2) ---
+    int r2Value = ctl->throttle(); 
+    int l2Value = ctl->brake();     
 
-    float bucketStep = 0.0f;
-    if (r1Pressed) {
-        bucketStep += bucketFixedSpeed;
+    float bucketStep = 0;
+    if (r2Value > 30) {
+        bucketStep += map(r2Value, 0, 1023, 0, bucketServoSpeed * 100) / 100.0;
     }
-    if (l1Pressed) {
-        bucketStep -= bucketFixedSpeed;
+    if (l2Value > 30) {
+        bucketStep -= map(l2Value, 0, 1023, 0, bucketServoSpeed * 100) / 100.0;
     }
 
-    if (bucketStep != 0.0f) {
+    if (bucketStep != 0) {
         bucketServoPosition += bucketStep;
-        bucketServoPosition = constrain(bucketServoPosition, 0.0f, 180.0f);
+        bucketServoPosition = constrain(bucketServoPosition, 0.0, 180.0);
         bucketServo.write((int)bucketServoPosition);
     }
 
-    // --- 4. Claw Servo Control via Face Buttons (A / Y) ---
-    bool aPressed = (buttons & BTN_A) != 0;
-    bool yPressed = (buttons & BTN_Y) != 0;
+    // --- 4. Claw Servo Control via Discrete Bumpers (R1 / L1) ---
+    // Bluepad32 button bits for bumpers: typically R1 and L1 have specific bit masks, 
+    // or we can use ctl->miscButtons() / specific masks depending on gamepad type.
+    // Standard mapping: let's check standard button bits or use ctl->buttons().
+    uint32_t buttons = ctl->buttons();
+    
+    // Note: depending on the gamepad model (DS4, Xbox, etc.), R1/L1 are often in ctl->buttons() 
+    // or separate fields. In Bluepad32, standard shoulder buttons are usually part of buttons bitmask.
+    // Let's check common masks or generic button flags. 
+    // Alternatively, check standard Bluepad constants if available, or evaluate standard bits:
+    // (If R1/L1 map to specific bits, e.g., 0x0010 / 0x0020, adjust as needed for your gamepad).
+    bool r1Pressed = (buttons & 0x0010); // Example bit for R1 (adjust if needed)
+    bool l1Pressed = (buttons & 0x0020); // Example bit for L1 (adjust if needed)
 
-    float clawStep = 0.0f;
-    if (aPressed) {
-        clawStep += clawFixedSpeed;
+    float clawStep = 0;
+    if (r1Pressed) {
+        clawStep += clawFixedSpeed; // Move in one direction at fixed speed
     }
-    if (yPressed) {
-        clawStep -= clawFixedSpeed;
+    if (l1Pressed) {
+        clawStep -= clawFixedSpeed; // Move in opposite direction at fixed speed
     }
 
-    if (clawStep != 0.0f) {
+    if (clawStep != 0) {
         clawServoPosition += clawStep;
-        clawServoPosition = constrain(clawServoPosition, 0.0f, 180.0f);
+        clawServoPosition = constrain(clawServoPosition, 0.0, 180.0);
         clawServo.write((int)clawServoPosition);
     }
 
-    // --- 5. Lights Toggle (Button X) ---
-    if ((buttons & BTN_X) && (millis() - lastButtonPress > 400)) {
+    // --- 5. Lights Toggle (Button X / Square) ---
+    if ((buttons & 0x0004) && (millis() - lastButtonPress > 400)) {
         lightsOn = !lightsOn;
         digitalWrite(auxLightsPin, lightsOn ? HIGH : LOW);
         lastButtonPress = millis();
