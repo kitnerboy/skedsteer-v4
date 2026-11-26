@@ -42,6 +42,11 @@ const float clawFixedSpeed = 2.0;     // Fixed speed for discrete control
 bool lightsOn = false;
 unsigned long lastButtonPress = 0;
 
+constexpr uint32_t BTN_A  = 0x0001;
+constexpr uint32_t BTN_B  = 0x0002;
+constexpr uint32_t BTN_X  = 0x0004;
+constexpr uint32_t BTN_Y  = 0x0008;
+
 void setup() {
     USBSerial.begin(115200);
     
@@ -154,30 +159,27 @@ void processGamepad(ControllerPtr ctl) {
 
     moveMotors(leftSpeed, rightSpeed);
 
-    // --- 2. Arm Control via Digital Bumpers (R1 / L1) ---
+    // --- 2. Arm Control via buttons A and Y (R1 / L1) ---
     uint32_t buttons = ctl->buttons();
     // Adjust bit masks if your Steam Controller maps bumpers to different bits
-    bool r1Pressed = (buttons & 0x0010) != 0;
-    bool l1Pressed = (buttons & 0x0020) != 0;
+    bool armUpPressed = (buttons & BTN_A) != 0;
+    bool armDownPressed = (buttons & BTN_Y) != 0;
 
     int armSpeed = 0;
-    if (r1Pressed && !l1Pressed) {
+    if (armUpPressed && !armDownPressed) {
         armSpeed = armFixedSpeed;
-    } else if (l1Pressed && !r1Pressed) {
+    } else if (armDownPressed && !armUpPressed) {
         armSpeed = -armFixedSpeed;
     }
     moveArm(armSpeed);
 
-    // --- 3. Bucket Servo Control via Analog Triggers (L2 / R2) ---
-    int r2Value = ctl->throttle();
-    int l2Value = ctl->brake();
-
+    // --- 3. Bucket Servo Control via buttons B and X ---
     float bucketStep = 0;
-    if (r2Value > 30) {
-        bucketStep += map(r2Value, 0, 1023, 0, bucketServoSpeed * 100) / 100.0;
+    if (buttons & BTN_B) {
+        bucketStep += bucketServoSpeed;
     }
-    if (l2Value > 30) {
-        bucketStep -= map(l2Value, 0, 1023, 0, bucketServoSpeed * 100) / 100.0;
+    if (buttons & BTN_X) {
+        bucketStep -= bucketServoSpeed;
     }
 
     if (bucketStep != 0) {
